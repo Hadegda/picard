@@ -26,6 +26,8 @@ package picard.analysis;
 
 import picard.metrics.MultilevelMetrics;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * High level metrics about the alignment of reads within a SAM file, produced by
  * the CollectAlignmentSummaryMetrics program and usually stored in a file with
@@ -46,10 +48,10 @@ public class AlignmentSummaryMetrics extends MultilevelMetrics {
      * The total number of reads including all PF and non-PF reads. When CATEGORY equals PAIR
      * this value will be 2x the number of clusters.
      */
-    public long TOTAL_READS;
+    public AtomicLong TOTAL_READS = new AtomicLong(0);
 
     /** The number of PF reads where PF is defined as passing Illumina's filter. */
-    public long PF_READS;
+    public AtomicLong PF_READS = new AtomicLong(0);
 
     /** The percentage of reads that are PF (PF_READS / TOTAL_READS) */
     public double PCT_PF_READS;
@@ -59,13 +61,13 @@ public class AlignmentSummaryMetrics extends MultilevelMetrics {
      * entirely of A bases and/or N bases. These reads are marked as they are usually artifactual and
      * are of no use in downstream analysis.
      */
-    public long PF_NOISE_READS;
+    public AtomicLong PF_NOISE_READS = new AtomicLong(0);
 
     /**
      * The number of PF reads that were aligned to the reference sequence. This includes reads that
      * aligned with low quality (i.e. their alignments are ambiguous).
      */
-    public long PF_READS_ALIGNED;
+    public AtomicLong PF_READS_ALIGNED = new AtomicLong(0);
 
     /**
      * The percentage of PF reads that aligned to the reference sequence. PF_READS_ALIGNED / PF_READS
@@ -75,26 +77,26 @@ public class AlignmentSummaryMetrics extends MultilevelMetrics {
     /**
      * The total number of aligned bases, in all mapped PF reads, that are aligned to the reference sequence.
      */
-    public long PF_ALIGNED_BASES;
+    public AtomicLong PF_ALIGNED_BASES = new AtomicLong(0);
 
     /**
      * The number of PF reads that were aligned to the reference sequence with a mapping quality of
      * Q20 or higher signifying that the aligner estimates a 1/100 (or smaller) chance that the
      * alignment is wrong.
      */
-    public long PF_HQ_ALIGNED_READS;
+    public AtomicLong PF_HQ_ALIGNED_READS = new AtomicLong(0);
 
     /**
      * The number of bases aligned to the reference sequence in reads that were mapped at high
      * quality.  Will usually approximate PF_HQ_ALIGNED_READS * READ_LENGTH but may differ when
      * either mixed read lengths are present or many reads are aligned with gaps.
      */
-    public long PF_HQ_ALIGNED_BASES;
+    public AtomicLong PF_HQ_ALIGNED_BASES = new AtomicLong(0);
 
     /**
      * The subset of PF_HQ_ALIGNED_BASES where the base call quality was Q20 or higher.
      */
-    public long PF_HQ_ALIGNED_Q20_BASES;
+    public AtomicLong PF_HQ_ALIGNED_Q20_BASES = new AtomicLong(0);
 
     /**
      * The median number of mismatches versus the reference sequence in reads that were aligned
@@ -128,7 +130,7 @@ public class AlignmentSummaryMetrics extends MultilevelMetrics {
     /**
      * The number of aligned reads whose mate pair was also aligned to the reference.
      */
-    public long READS_ALIGNED_IN_PAIRS;
+    public AtomicLong READS_ALIGNED_IN_PAIRS = new AtomicLong(0);
 
     /**
      * The percentage of reads whose mate pair was also aligned to the reference.
