@@ -31,19 +31,18 @@ import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.reference.ReferenceSequence;
 import htsjdk.samtools.reference.ReferenceSequenceFileWalker;
-import htsjdk.samtools.util.CloserUtil;
-import htsjdk.samtools.util.IOUtil;
-import htsjdk.samtools.util.Log;
-import htsjdk.samtools.util.ProgressLogger;
-import htsjdk.samtools.util.SequenceUtil;
+import htsjdk.samtools.util.*;
 import picard.PicardException;
 import picard.cmdline.CommandLineProgram;
 import picard.cmdline.Option;
 import picard.cmdline.StandardOptionDefinitions;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
+import java.util.concurrent.*;
 
 /**
  * Super class that is designed to provide some consistent structure between subclasses that
@@ -67,6 +66,10 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
     public long STOP_AFTER = 0;
 
     private static final Log log = Log.getInstance(SinglePassSamProgram.class);
+
+    public static int MAX_PAIRES = 500;
+
+    private static Semaphore semLock = new Semaphore(0);
 
     /**
      * Final implementation of doWork() that checks and loads the input and optionally reference
@@ -126,6 +129,16 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
 
         final ProgressLogger progress = new ProgressLogger(log);
 
+        long start = System.nanoTime();
+
+        int availableProcessors = 0;
+        if (Runtime.getRuntime().availableProcessors() < 2)
+            availableProcessors = 2;
+        else
+            availableProcessors = Runtime.getRuntime().availableProcessors();
+        ExecutorService service = Executors.newFixedThreadPool(availableProcessors / 2);
+        List<Object[]> paires = new ArrayList<>(MAX_PAIRES);
+
         for (final SAMRecord rec : in) {
             final ReferenceSequence ref;
             if (walker == null || rec.getReferenceIndex() == SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX) {
@@ -134,8 +147,24 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
                 ref = walker.get(rec.getReferenceIndex());
             }
 
-            for (final SinglePassSamProgram program : programs) {
-                program.acceptRead(rec, ref);
+            paires.add(new Object[] {rec, ref});
+
+            if(paires.size() >= MAX_PAIRES) {
+                final List<Object[]> tmpPaires = paires;
+                paires = new ArrayList<>(MAX_PAIRES);
+
+                service.submit(new Runnable() {
+                    @Override
+                    public void run() {
+                        for (Object[] Objects : tmpPaires) {
+                            SAMRecord rec = (SAMRecord) Objects[0];
+                            ReferenceSequence ref = (ReferenceSequence) Objects[1];
+                            for (final SinglePassSamProgram program : programs) {
+                                program.acceptRead(rec, ref);
+                            }
+                        }
+                    }
+                });
             }
 
             progress.record(rec);
@@ -151,11 +180,43 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
             }
         }
 
+        final List<Object[]> tmpPaires = paires;
+        service.submit(new Runnable() {
+            @Override
+            public void run() {
+                for (Object[] Objects : tmpPaires) {
+                    SAMRecord rec = (SAMRecord) Objects[0];
+                    ReferenceSequence ref = (ReferenceSequence) Objects[1];
+                    for (final SinglePassSamProgram program : programs) {
+                        program.acceptRead(rec, ref);
+                    }
+                }
+                semLock.release();
+            }
+        });
+
+        try {
+            semLock.acquire();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        service.shutdown();
+
+        try{
+            service.awaitTermination(1, TimeUnit.DAYS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        long stop = System.nanoTime();
+        long time = stop - start;
+
         CloserUtil.close(in);
 
         for (final SinglePassSamProgram program : programs) {
             program.finish();
         }
+        log.warn("  ElapsedTime: " + time);
     }
 
     /** Can be overriden and set to false if the section of unmapped reads at the end of the file isn't needed. */
@@ -173,5 +234,6 @@ public abstract class SinglePassSamProgram extends CommandLineProgram {
 
     /** Should be implemented by subclasses to do one-time finalization work. */
     protected abstract void finish();
+
 
 }
