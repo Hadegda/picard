@@ -25,19 +25,22 @@
 package picard.analysis;
 
 import htsjdk.samtools.*;
+import htsjdk.samtools.SamPairUtil.PairOrientation;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.reference.ReferenceSequence;
 import htsjdk.samtools.util.CoordMath;
 import htsjdk.samtools.util.Histogram;
 import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.samtools.util.StringUtil;
-import htsjdk.samtools.SamPairUtil.PairOrientation;
 import picard.metrics.PerUnitMetricCollector;
 import picard.metrics.SAMRecordAndReference;
 import picard.metrics.SAMRecordAndReferenceMultiLevelCollector;
 
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMultiLevelCollector<AlignmentSummaryMetrics, Comparable<?>> {
     // If we have a reference sequence, collect metrics on how well we aligned to it
@@ -133,7 +136,8 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
 
         @Override
         public void addMetricsToFile(final MetricsFile<AlignmentSummaryMetrics, Comparable<?>> file) {
-            if (firstOfPairCollector.getMetrics().TOTAL_READS > 0) {
+            //if (firstOfPairCollector.getMetrics().TOTAL_READS > 0) {
+            if (firstOfPairCollector.getMetrics().TOTAL_READS.get() > 0) {
                 // override how bad cycle is determined for paired reads, it should be
                 // the sum of first and second reads
                 pairCollector.getMetrics().BAD_CYCLES = firstOfPairCollector.getMetrics().BAD_CYCLES +
@@ -145,7 +149,8 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
             }
 
             //if there are no reads in any category then we will returned an unpaired alignment summary metric with all zero values
-            if (unpairedCollector.getMetrics().TOTAL_READS > 0 || firstOfPairCollector.getMetrics().TOTAL_READS == 0) {
+            //if (unpairedCollector.getMetrics().TOTAL_READS > 0 || firstOfPairCollector.getMetrics().TOTAL_READS == 0) {
+            if (unpairedCollector.getMetrics().TOTAL_READS.get() > 0 || firstOfPairCollector.getMetrics().TOTAL_READS.get() == 0) {
                 file.addMetric(unpairedCollector.getMetrics());
             }
         }
@@ -154,19 +159,24 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
          * Class that counts reads that match various conditions
          */
         private class IndividualAlignmentSummaryMetricsCollector {
-            private long numPositiveStrand = 0;
+            private AtomicLong numPositiveStrand = new AtomicLong(0);
             private final Histogram<Integer> readLengthHistogram = new Histogram<Integer>();
             private AlignmentSummaryMetrics metrics;
-            private long chimeras;
-            private long chimerasDenominator;
-            private long adapterReads;
-            private long indels;
+            private AtomicLong chimeras = new AtomicLong(0);
+            private AtomicLong chimerasDenominator = new AtomicLong(0);
+            private AtomicLong adapterReads = new AtomicLong(0);
+            private AtomicLong indels = new AtomicLong(0);
 
-            private long nonBisulfiteAlignedBases = 0;
-            private long hqNonBisulfiteAlignedBases = 0;
+            private AtomicLong nonBisulfiteAlignedBases = new AtomicLong(0);
+            private AtomicLong hqNonBisulfiteAlignedBases = new AtomicLong(0);
             private final Histogram<Long> mismatchHistogram = new Histogram<Long>();
             private final Histogram<Long> hqMismatchHistogram = new Histogram<Long>();
             private final Histogram<Integer> badCycleHistogram = new Histogram<Integer>();
+
+            private Lock readLengthHistLock = new ReentrantLock();
+            private Lock hqMismatchHistLock = new ReentrantLock();
+            private Lock mismatchHistLock = new ReentrantLock();
+            private Lock badCycleHistLock = new ReentrantLock();
 
             public IndividualAlignmentSummaryMetricsCollector(final AlignmentSummaryMetrics.Category pairingCategory,
                                                               final String sample,
@@ -191,31 +201,31 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
 
             public void onComplete() {
                 //summarize read data
-                if (metrics.TOTAL_READS > 0)
+                if (metrics.TOTAL_READS.get() > 0)
                 {
-                    metrics.PCT_PF_READS = (double) metrics.PF_READS / (double) metrics.TOTAL_READS;
-                    metrics.PCT_ADAPTER = this.adapterReads / (double) metrics.PF_READS;
+                    metrics.PCT_PF_READS = (double) metrics.PF_READS.get() / (double) metrics.TOTAL_READS.get();
+                    metrics.PCT_ADAPTER = this.adapterReads.get() / (double) metrics.PF_READS.get();
                     metrics.MEAN_READ_LENGTH = readLengthHistogram.getMean();
 
                     //Calculate BAD_CYCLES
                     metrics.BAD_CYCLES = 0;
                     for (final Histogram.Bin<Integer> cycleBin : badCycleHistogram.values()) {
-                        final double badCyclePercentage = cycleBin.getValue() / metrics.TOTAL_READS;
+                        final double badCyclePercentage = cycleBin.getValue() / metrics.TOTAL_READS.get();
                         if (badCyclePercentage >= .8) {
                             metrics.BAD_CYCLES++;
                         }
                     }
 
                     if(doRefMetrics) {
-                        if (metrics.PF_READS > 0)         metrics.PCT_PF_READS_ALIGNED = (double) metrics.PF_READS_ALIGNED / (double) metrics.PF_READS;
-                        if (metrics.PF_READS_ALIGNED > 0) metrics.PCT_READS_ALIGNED_IN_PAIRS = (double) metrics.READS_ALIGNED_IN_PAIRS/ (double) metrics.PF_READS_ALIGNED;
-                        if (metrics.PF_READS_ALIGNED > 0) metrics.STRAND_BALANCE = numPositiveStrand / (double) metrics.PF_READS_ALIGNED;
-                        if (this.chimerasDenominator > 0) metrics.PCT_CHIMERAS = this.chimeras / (double) this.chimerasDenominator;
+                        if (metrics.PF_READS.get() > 0)         metrics.PCT_PF_READS_ALIGNED = (double) metrics.PF_READS_ALIGNED.get() / (double) metrics.PF_READS.get();
+                        if (metrics.PF_READS_ALIGNED.get() > 0) metrics.PCT_READS_ALIGNED_IN_PAIRS = (double) metrics.READS_ALIGNED_IN_PAIRS.get()/ (double) metrics.PF_READS_ALIGNED.get();
+                        if (metrics.PF_READS_ALIGNED.get() > 0) metrics.STRAND_BALANCE = numPositiveStrand.get() / (double) metrics.PF_READS_ALIGNED.get();
+                        if (this.chimerasDenominator.get() > 0) metrics.PCT_CHIMERAS = this.chimeras.get() / (double) this.chimerasDenominator.get();
 
-                        if (nonBisulfiteAlignedBases > 0) metrics.PF_MISMATCH_RATE = mismatchHistogram.getSum() / (double) nonBisulfiteAlignedBases;
+                        if (nonBisulfiteAlignedBases.get() > 0) metrics.PF_MISMATCH_RATE = mismatchHistogram.getSum() / (double) nonBisulfiteAlignedBases.get();
                         metrics.PF_HQ_MEDIAN_MISMATCHES = hqMismatchHistogram.getMedian();
-                        if (hqNonBisulfiteAlignedBases > 0) metrics.PF_HQ_ERROR_RATE = hqMismatchHistogram.getSum() / (double) hqNonBisulfiteAlignedBases;
-                        if (metrics.PF_ALIGNED_BASES > 0) metrics.PF_INDEL_RATE = this.indels / (double) metrics.PF_ALIGNED_BASES;
+                        if (hqNonBisulfiteAlignedBases.get() > 0) metrics.PF_HQ_ERROR_RATE = hqMismatchHistogram.getSum() / (double) hqNonBisulfiteAlignedBases.get();
+                        if (metrics.PF_ALIGNED_BASES.get() > 0) metrics.PF_INDEL_RATE = this.indels.get() / (double) metrics.PF_ALIGNED_BASES.get();
                     }
                 }
             }
@@ -224,12 +234,18 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
                 // NB: for read count metrics, do not include supplementary records, but for base count metrics, do include supplementary records.
                 if (record.getSupplementaryAlignmentFlag()) return;
 
-                metrics.TOTAL_READS++;
-                readLengthHistogram.increment(record.getReadBases().length);
+                metrics.TOTAL_READS.incrementAndGet();
+
+                readLengthHistLock.lock();
+                try {
+                    readLengthHistogram.increment(record.getReadBases().length);
+                }finally {
+                    readLengthHistLock.unlock();
+                }
 
                 if (!record.getReadFailsVendorQualityCheckFlag()) {
-                    metrics.PF_READS++;
-                    if (isNoiseRead(record)) metrics.PF_NOISE_READS++;
+                    metrics.PF_READS.incrementAndGet();
+                    if (isNoiseRead(record)) metrics.PF_NOISE_READS.incrementAndGet();
 
                     if (record.getReadUnmappedFlag()) {
                         // If the read is unmapped see if it's adapter sequence
@@ -237,31 +253,31 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
                         if (!(record instanceof BAMRecord)) StringUtil.toUpperCase(readBases);
 
                         if (adapterUtility.isAdapterSequence(readBases)) {
-                            this.adapterReads++;
+                            this.adapterReads.incrementAndGet();
                         }
                     }
                     else if(doRefMetrics) {
-                        metrics.PF_READS_ALIGNED++;
-                        if (!record.getReadNegativeStrandFlag()) numPositiveStrand++;
+                        metrics.PF_READS_ALIGNED.incrementAndGet();
+                        if (!record.getReadNegativeStrandFlag()) numPositiveStrand.incrementAndGet();
                         if (record.getReadPairedFlag() && !record.getMateUnmappedFlag()) {
-                            metrics.READS_ALIGNED_IN_PAIRS++;
+                            metrics.READS_ALIGNED_IN_PAIRS.incrementAndGet();
 
                             // Check that both ends have mapq > minimum
-                            final Integer mateMq = record.getIntegerAttribute(SAMTag.MQ.toString());
+                            final Integer mateMq = record.getIntegerAttribute("MQ");
                             if (mateMq == null || mateMq >= MAPPING_QUALITY_THRESOLD && record.getMappingQuality() >= MAPPING_QUALITY_THRESOLD) {
-                                ++this.chimerasDenominator;
+                                this.chimerasDenominator.getAndIncrement();
 
                                 // With both reads mapped we can see if this pair is chimeric
                                 if (ChimeraUtil.isChimeric(record, maxInsertSize, expectedOrientations)) {
-                                    ++this.chimeras;
+                                    this.chimeras.getAndIncrement();
                                 }
                             }
                         }
                         else { // fragment reads or read pairs with one end that maps
                             // Consider chimeras that occur *within* the read using the SA tag
                             if (record.getMappingQuality() >= MAPPING_QUALITY_THRESOLD) {
-                                ++this.chimerasDenominator;
-                                if (record.getAttribute(SAMTag.SA.toString()) != null) ++this.chimeras;
+                                this.chimerasDenominator.getAndIncrement();
+                                if (record.getAttribute("SA") != null) this.chimeras.getAndIncrement();
                             }
                         }
                     }
@@ -276,13 +292,18 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
                     final byte[] readBases = record.getReadBases();
                     for (int i = 0; i < readBases.length; i++) {
                         if (SequenceUtil.isNoCall(readBases[i])) {
-                            badCycleHistogram.increment(CoordMath.getCycle(record.getReadNegativeStrandFlag(), readBases.length, i));
+                            badCycleHistLock.lock();
+                            try{
+                                badCycleHistogram.increment(CoordMath.getCycle(record.getReadNegativeStrandFlag(), readBases.length, i));
+                            }finally {
+                                badCycleHistLock.unlock();
+                            }
                         }
                     }
                 }
                 else if (!record.getReadFailsVendorQualityCheckFlag()) {
                     final boolean highQualityMapping = isHighQualityMapping(record);
-                    if (highQualityMapping && !record.getSupplementaryAlignmentFlag()) metrics.PF_HQ_ALIGNED_READS++;
+                    if (highQualityMapping && !record.getSupplementaryAlignmentFlag()) metrics.PF_HQ_ALIGNED_READS.incrementAndGet();
 
                     final byte[] readBases = record.getReadBases();
                     final byte[] refBases = reference.getBases();
@@ -314,29 +335,46 @@ public class AlignmentSummaryMetricsCollector extends SAMRecordAndReferenceMulti
 
                             if(mismatch) mismatchCount++;
 
-                            metrics.PF_ALIGNED_BASES++;
-                            if(!bisulfiteBase) nonBisulfiteAlignedBases++;
+                            metrics.PF_ALIGNED_BASES.incrementAndGet();
+                            if(!bisulfiteBase) nonBisulfiteAlignedBases.incrementAndGet();
 
                             if (highQualityMapping) {
-                                metrics.PF_HQ_ALIGNED_BASES++;
-                                if (!bisulfiteBase) hqNonBisulfiteAlignedBases++;
-                                if (qualities[readBaseIndex] >= BASE_QUALITY_THRESHOLD) metrics.PF_HQ_ALIGNED_Q20_BASES++;
+                                metrics.PF_HQ_ALIGNED_BASES.incrementAndGet();
+                                if (!bisulfiteBase) hqNonBisulfiteAlignedBases.incrementAndGet();
+                                if (qualities[readBaseIndex] >= BASE_QUALITY_THRESHOLD) metrics.PF_HQ_ALIGNED_Q20_BASES.incrementAndGet();
                                 if (mismatch) hqMismatchCount++;
                             }
 
                             if (mismatch || SequenceUtil.isNoCall(readBases[readBaseIndex])) {
-                                badCycleHistogram.increment(CoordMath.getCycle(record.getReadNegativeStrandFlag(), readBases.length, i));
+                                badCycleHistLock.lock();
+                                try {
+                                    badCycleHistogram.increment(CoordMath.getCycle(record.getReadNegativeStrandFlag(), readBases.length, i));
+                                } finally {
+                                    badCycleHistLock.unlock();
+                                }
                             }
                         }
                     }
 
-                    mismatchHistogram.increment(mismatchCount);
-                    hqMismatchHistogram.increment(hqMismatchCount);
+                    mismatchHistLock.lock();
+                    try {
+                        mismatchHistogram.increment(mismatchCount);
+                    } finally {
+                        mismatchHistLock.unlock();
+                    }
+                    hqMismatchHistLock.lock();
+                    try {
+                        hqMismatchHistogram.increment(hqMismatchCount);
+                    } finally {
+                        hqMismatchHistLock.unlock();
+                    }
+
+                    //hqMismatchHistogram.incrementAndGet(hqMismatchCount, 1d);
 
                     // Add any insertions and/or deletions to the global count
                     for (final CigarElement elem : record.getCigar().getCigarElements()) {
                         final CigarOperator op = elem.getOperator();
-                        if (op == CigarOperator.INSERTION || op == CigarOperator.DELETION) ++ this.indels;
+                        if (op == CigarOperator.INSERTION || op == CigarOperator.DELETION) this.indels.getAndIncrement();
                     }
                 }
             }
